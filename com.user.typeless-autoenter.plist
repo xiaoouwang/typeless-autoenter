@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.typeless-autoenter</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Change this to the actual path of your compiled binary -->
+        <string>/path/to/typeless-autoenter</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Uncomment to enable logging:
+    <key>StandardOutPath</key>
+    <string>/tmp/typeless-autoenter.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/typeless-autoenter.log</string>
+    -->
+</dict>
+</plist>
