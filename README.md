@@ -28,10 +28,14 @@ chmod +x build.sh
 
 Requires Xcode Command Line Tools (`xcode-select --install`).
 
+The build script compiles the source, packages it into a `TypelessAutoEnter.app` bundle, and code-signs it. The `.app` bundle ensures macOS reliably remembers the Accessibility permission across restarts.
+
 ## Usage
 
 ```bash
-./typeless-autoenter
+open TypelessAutoEnter.app
+# or run the binary directly:
+TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
 ```
 
 On first launch, macOS requires **Accessibility** permission. The app will show an alert with the binary path if permission is missing.
@@ -41,11 +45,11 @@ On first launch, macOS requires **Accessibility** permission. The app will show 
 1. Open **System Settings** (or System Preferences on older macOS)
 2. Go to **Privacy & Security → Accessibility**
 3. Click the **+** button (you may need to unlock with your password first)
-4. Navigate to the `typeless-autoenter` binary and add it
+4. Navigate to `TypelessAutoEnter.app` and add it
 5. Make sure the toggle next to it is **enabled**
 6. Relaunch the app
 
-You only need to do this once per binary. If you recompile, macOS will ask again (permission is tied to the binary hash).
+You only need to do this once. The `.app` bundle has a stable `CFBundleIdentifier`, so macOS remembers the permission even after recompiling.
 
 ### Menu bar
 
@@ -87,7 +91,10 @@ Then recompile with `./build.sh`.
 
 ## Auto-start (launchd)
 
-1. Edit `com.user.typeless-autoenter.plist` — replace `/path/to/typeless-autoenter` with the actual path to your compiled binary
+1. Edit `com.user.typeless-autoenter.plist` — replace the path with the actual path to your `.app` bundle's binary:
+   ```
+   /path/to/TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
+   ```
 2. Copy to LaunchAgents and load:
 
 ```bash

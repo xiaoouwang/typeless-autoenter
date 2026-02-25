@@ -28,10 +28,14 @@ chmod +x build.sh
 
 需要 Xcode Command Line Tools（`xcode-select --install`）。
 
+编译脚本会自动将程序打包为 `TypelessAutoEnter.app` bundle 并签名。`.app` bundle 能让 macOS 在重启后可靠地记住辅助功能权限。
+
 ## 使用
 
 ```bash
-./typeless-autoenter
+open TypelessAutoEnter.app
+# 或直接运行二进制：
+TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
 ```
 
 首次启动需要授予**辅助功能**权限。如果缺少权限，程序会弹窗提示并显示二进制路径。
@@ -41,11 +45,11 @@ chmod +x build.sh
 1. 打开 **系统设置**
 2. 进入 **隐私与安全性 → 辅助功能**
 3. 点击 **+** 号（可能需要先解锁）
-4. 找到 `typeless-autoenter` 二进制文件并添加
+4. 找到 `TypelessAutoEnter.app` 并添加
 5. 确保旁边的开关是**打开**的
 6. 重新启动程序
 
-每个二进制只需授权一次。重新编译后 macOS 会重新要求授权（权限绑定二进制哈希值）。
+只需授权一次。`.app` bundle 拥有稳定的 `CFBundleIdentifier`，即使重新编译，macOS 也能记住权限。
 
 ### 菜单栏
 
@@ -87,7 +91,10 @@ static const CFTimeInterval DELAY_SEC = 0.5;  // 改成你想要的延迟秒数
 
 ## 开机自启（launchd）
 
-1. 编辑 `com.user.typeless-autoenter.plist`，把 `/path/to/typeless-autoenter` 替换成你编译出的二进制的实际路径
+1. 编辑 `com.user.typeless-autoenter.plist`，把路径替换成你的 `.app` bundle 内二进制的实际路径：
+   ```
+   /path/to/TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
+   ```
 2. 复制到 LaunchAgents 并加载：
 
 ```bash

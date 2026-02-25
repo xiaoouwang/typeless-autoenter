@@ -30,29 +30,47 @@ static const CFTimeInterval DELAY_SEC = 0.5;
 static void (^g_toggle_block)(void) = nil;
 
 /* ================================================================
- *  PID 扫描: 找到所有 Typeless 进程
+ *  PID scan: find all Typeless processes (runs on background thread)
+ *
+ *  proc_name() is a syscall — with 1000+ processes it blocks for
+ *  tens of ms. The main thread also serves the CGEvent Tap callback
+ *  (active tap: macOS waits for it to return before delivering the
+ *  keystroke), so blocking the main thread = freezing keyboard input.
+ *  Fix: scan in background, atomically swap results on main thread.
  * ================================================================ */
 
 static void refresh_typeless_pids(void) {
-    int buf_size = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
-    if (buf_size <= 0) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        int buf_size = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
+        if (buf_size <= 0) return;
 
-    pid_t *pids = malloc(buf_size);
-    if (!pids) return;
+        pid_t *pids = malloc(buf_size);
+        if (!pids) return;
 
-    int count = proc_listpids(PROC_ALL_PIDS, 0, pids, buf_size) / (int)sizeof(pid_t);
+        int count = proc_listpids(PROC_ALL_PIDS, 0, pids, buf_size)
+                    / (int)sizeof(pid_t);
 
-    g_typeless_pid_count = 0;
-    for (int i = 0; i < count && g_typeless_pid_count < MAX_PIDS; i++) {
-        if (pids[i] == 0) continue;
-        char name[PROC_PIDPATHINFO_MAXSIZE];
-        if (proc_name(pids[i], name, sizeof(name)) > 0 &&
-            strstr(name, "Typeless") != NULL) {
-            g_typeless_pids[g_typeless_pid_count++] = pids[i];
+        /* write to heap temp array — don't touch global state */
+        pid_t *tmp = malloc(MAX_PIDS * sizeof(pid_t));
+        if (!tmp) { free(pids); return; }
+        __block int tmp_count = 0;
+        for (int i = 0; i < count && tmp_count < MAX_PIDS; i++) {
+            if (pids[i] == 0) continue;
+            char name[256];
+            if (proc_name(pids[i], name, sizeof(name)) > 0 &&
+                strstr(name, "Typeless") != NULL) {
+                tmp[tmp_count++] = pids[i];
+            }
         }
-    }
-    free(pids);
+        free(pids);
 
+        /* swap on main thread — event_callback always sees a consistent snapshot */
+        dispatch_async(dispatch_get_main_queue(), ^{
+            memcpy(g_typeless_pids, tmp, tmp_count * sizeof(pid_t));
+            g_typeless_pid_count = tmp_count;
+            free(tmp);
+        });
+    });
 }
 
 static int is_typeless_pid(pid_t pid) {
