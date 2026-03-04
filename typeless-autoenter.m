@@ -10,14 +10,17 @@
  *
  *  菜单栏 ↩ 图标 + 毛玻璃 HUD 通知
  *  CGEvent Tap 监听 → PID 过滤 → 500ms 延迟 → 模拟 Enter/Tab
+ *  Ctrl+Shift+` 显示当前 Enter/Tab 状态
  *  SIGUSR1 / 菜单栏点击 切换开关
  * ================================================================ */
 
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
-#import <Carbon/Carbon.h>   /* kVK_Return, kVK_Tab, kVK_ANSI_V */
+#import <Carbon/Carbon.h>   /* kVK_Return, kVK_Tab, kVK_ANSI_Grave, kVK_ANSI_V */
 #import <libproc.h>
 #include <signal.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* ================================================================
  *  全局状态
@@ -37,6 +40,50 @@ static const CFTimeInterval DELAY_SEC = 0.5;
 /* 快捷键回调用的 toggle block */
 static void (^g_toggle_enter_block)(void) = nil;
 static void (^g_toggle_tab_block)(void) = nil;
+static void (^g_show_status_block)(void) = nil;
+static volatile int g_ui_lang_en = 0;  /* 0=中文(默认), 1=English */
+
+static inline NSString *L(NSString *zh, NSString *en) {
+    return g_ui_lang_en ? en : zh;
+}
+
+static void set_ui_lang_from_token(const char *token) {
+    if (!token || !*token) return;
+    if (strcasecmp(token, "en") == 0 || strcasecmp(token, "english") == 0) {
+        g_ui_lang_en = 1;
+        return;
+    }
+    if (strcasecmp(token, "zh") == 0 || strcasecmp(token, "cn") == 0 ||
+        strcasecmp(token, "zh-cn") == 0 || strcasecmp(token, "chinese") == 0) {
+        g_ui_lang_en = 0;
+    }
+}
+
+static void init_ui_lang(int argc, const char *argv[]) {
+    /* 默认中文，允许环境变量和启动参数覆盖 */
+    g_ui_lang_en = 0;
+
+    const char *env = getenv("TYPELESS_UI_LANG");
+    set_ui_lang_from_token(env);
+
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (!arg) continue;
+
+        if (strcmp(arg, "--lang") == 0 && i + 1 < argc) {
+            set_ui_lang_from_token(argv[++i]);
+            continue;
+        }
+        if (strncmp(arg, "--lang=", 7) == 0) {
+            set_ui_lang_from_token(arg + 7);
+            continue;
+        }
+        if (strncmp(arg, "--ui-lang=", 10) == 0) {
+            set_ui_lang_from_token(arg + 10);
+            continue;
+        }
+    }
+}
 
 /* ================================================================
  *  PID 扫描: 找到所有 Typeless 进程（后台线程执行）
@@ -168,6 +215,7 @@ static CGEventRef event_callback(
     /* 快捷键:
      * Ctrl+Shift+Enter -> 切换 AutoEnter
      * Ctrl+Shift+Tab   -> 切换 AutoTab
+     * Ctrl+Shift+`     -> 仅显示当前状态（基于物理键位，输入法无关）
      * 命中后吞掉按键，不传给应用
      */
     CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(
@@ -189,6 +237,12 @@ static CGEventRef event_callback(
     if (ctrl_shift_only && keycode == kVK_Tab) {
         if (g_toggle_tab_block)
             dispatch_async(dispatch_get_main_queue(), g_toggle_tab_block);
+        return NULL;   /* 吞掉，不传给应用 */
+    }
+
+    if (ctrl_shift_only && keycode == kVK_ANSI_Grave) {
+        if (g_show_status_block)
+            dispatch_async(dispatch_get_main_queue(), g_show_status_block);
         return NULL;   /* 吞掉，不传给应用 */
     }
 
@@ -252,6 +306,8 @@ static void open_accessibility_settings(void) {
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic, strong) NSMenuItem   *toggleEnterItem;
 @property (nonatomic, strong) NSMenuItem   *toggleTabItem;
+@property (nonatomic, strong) NSMenuItem   *languageItem;
+@property (nonatomic, strong) NSMenuItem   *quitItem;
 @property (nonatomic, strong) HUDWindow    *hudWindow;
 @property (nonatomic, strong) NSTextField  *hudIcon;
 @property (nonatomic, strong) NSTextField  *hudLabel;
@@ -283,9 +339,11 @@ static inline BOOL has_enabled_action(void) {
     __weak typeof(self) weakSelf = self;
     g_toggle_enter_block = ^{ [weakSelf toggleEnter:nil]; };
     g_toggle_tab_block = ^{ [weakSelf toggleTab:nil]; };
+    g_show_status_block = ^{ [weakSelf showStatus:nil]; };
 
     refresh_typeless_pids();
-    NSLog(@"[autoenter] running (pid %d, enter=1, tab=0)", getpid());
+    NSLog(@"[autoenter] running (pid %d, enter=1, tab=0, ui=%s)",
+          getpid(), g_ui_lang_en ? "en" : "zh");
 }
 
 - (void)applicationWillTerminate:(NSNotification *)n {
@@ -299,14 +357,12 @@ static inline BOOL has_enabled_action(void) {
     self.statusItem = [[NSStatusBar systemStatusBar]
         statusItemWithLength:NSVariableStatusItemLength];
 
-    self.statusItem.button.title = @"↩";
-    self.statusItem.button.font =
-        [NSFont monospacedSystemFontOfSize:15 weight:NSFontWeightMedium];
+    self.statusItem.button.title = @"";
 
     NSMenu *menu = [[NSMenu alloc] init];
 
     self.toggleEnterItem = [[NSMenuItem alloc]
-        initWithTitle:@"AutoEnter"
+        initWithTitle:@""
                action:@selector(toggleEnter:)
         keyEquivalent:@""];
     self.toggleEnterItem.target = self;
@@ -314,29 +370,38 @@ static inline BOOL has_enabled_action(void) {
     [menu addItem:self.toggleEnterItem];
 
     self.toggleTabItem = [[NSMenuItem alloc]
-        initWithTitle:@"AutoTab"
+        initWithTitle:@""
                action:@selector(toggleTab:)
         keyEquivalent:@""];
     self.toggleTabItem.target = self;
     self.toggleTabItem.state  = NSControlStateValueOff;
     [menu addItem:self.toggleTabItem];
 
+    self.languageItem = [[NSMenuItem alloc]
+        initWithTitle:@""
+               action:@selector(toggleUILanguage:)
+        keyEquivalent:@""];
+    self.languageItem.target = self;
+    [menu addItem:self.languageItem];
+
     [menu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *quit = [[NSMenuItem alloc]
-        initWithTitle:@"Quit"
+    self.quitItem = [[NSMenuItem alloc]
+        initWithTitle:@""
                action:@selector(quit:)
         keyEquivalent:@"q"];
-    quit.target = self;
-    [menu addItem:quit];
+    self.quitItem.target = self;
+    [menu addItem:self.quitItem];
 
     self.statusItem.menu = menu;
+    [self refreshLocalizedTexts];
+    [self refreshMenuAndIcon];
 }
 
 /* ---- 毛玻璃 HUD ---- */
 
 - (void)setupHUD {
-    CGFloat w = 160, h = 90;
+    CGFloat w = 220, h = 96;
     NSRect frame = NSMakeRect(0, 0, w, h);
 
     self.hudWindow = [[HUDWindow alloc]
@@ -369,24 +434,19 @@ static inline BOOL has_enabled_action(void) {
     self.hudIcon.font      = [NSFont systemFontOfSize:32 weight:NSFontWeightLight];
     self.hudIcon.textColor = [NSColor labelColor];
     self.hudIcon.alignment = NSTextAlignmentCenter;
-    self.hudIcon.frame     = NSMakeRect(0, 32, w, 44);
+    self.hudIcon.frame     = NSMakeRect(0, 38, w, 40);
     [blur addSubview:self.hudIcon];
 
     self.hudLabel = [NSTextField labelWithString:@""];
-    self.hudLabel.font      = [NSFont systemFontOfSize:14 weight:NSFontWeightMedium];
+    self.hudLabel.font      = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
     self.hudLabel.textColor = [NSColor secondaryLabelColor];
     self.hudLabel.alignment = NSTextAlignmentCenter;
-    self.hudLabel.frame     = NSMakeRect(0, 10, w, 22);
+    self.hudLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.hudLabel.frame     = NSMakeRect(8, 12, w - 16, 22);
     [blur addSubview:self.hudLabel];
 }
 
-- (void)showHUDWithIcon:(NSString *)icon label:(NSString *)label enabled:(BOOL)enabled {
-    self.hudIcon.stringValue = icon ?: @"↩";
-    self.hudLabel.stringValue = label ?: @"";
-    self.hudIcon.textColor = enabled
-        ? [NSColor labelColor]
-        : [NSColor tertiaryLabelColor];
-
+- (void)presentHUD {
     /* 居中 */
     NSRect sf = [NSScreen mainScreen].visibleFrame;
     NSRect wf = self.hudWindow.frame;
@@ -413,24 +473,195 @@ static inline BOOL has_enabled_action(void) {
         }];
 }
 
+- (void)showHUDWithIcon:(NSString *)icon label:(NSString *)label enabled:(BOOL)enabled {
+    NSString *displayIcon = icon ?: @"↩";
+    NSColor *singleColor = enabled
+        ? [NSColor labelColor]
+        : [NSColor tertiaryLabelColor];
+    self.hudIcon.stringValue = displayIcon;
+    self.hudIcon.textColor = singleColor;
+    self.hudIcon.alignment = NSTextAlignmentCenter;
+    self.hudLabel.stringValue = label ?: @"";
+    [self presentHUD];
+}
+
+- (NSAttributedString *)hudStatusIconAttributedTitle {
+    NSString *icon = @"↩  ⇥";
+    NSMutableAttributedString *attr =
+        [[NSMutableAttributedString alloc] initWithString:icon];
+    NSFont *font = self.hudIcon.font ?:
+        [NSFont systemFontOfSize:32 weight:NSFontWeightLight];
+    NSColor *enabledColor = [NSColor labelColor];
+    NSColor *disabledColor = [NSColor tertiaryLabelColor];
+    NSMutableParagraphStyle *centerStyle = [[NSMutableParagraphStyle alloc] init];
+    centerStyle.alignment = NSTextAlignmentCenter;
+
+    [attr addAttribute:NSFontAttributeName
+                 value:font
+                 range:NSMakeRange(0, icon.length)];
+    [attr addAttribute:NSParagraphStyleAttributeName
+                 value:centerStyle
+                 range:NSMakeRange(0, icon.length)];
+    [attr addAttribute:NSForegroundColorAttributeName
+                 value:(g_enter_enabled ? enabledColor : disabledColor)
+                 range:NSMakeRange(0, 1)];
+    [attr addAttribute:NSForegroundColorAttributeName
+                 value:(g_tab_enabled ? enabledColor : disabledColor)
+                 range:NSMakeRange(icon.length - 1, 1)];
+    return attr;
+}
+
 /* ---- 切换 ---- */
 
+- (void)refreshLocalizedTexts {
+    self.toggleEnterItem.title = L(@"自动回车", @"AutoEnter");
+    self.toggleTabItem.title   = L(@"自动 Tab", @"AutoTab");
+    self.languageItem.title    = g_ui_lang_en
+        ? @"UI Language: English"
+        : @"界面语言：中文";
+    self.quitItem.title        = L(@"退出", @"Quit");
+}
+
+- (NSString *)statusSummaryText {
+    NSString *enter = g_enter_enabled ? L(@"开启", @"ON") : L(@"关闭", @"OFF");
+    NSString *tab   = g_tab_enabled   ? L(@"开启", @"ON") : L(@"关闭", @"OFF");
+    return [NSString stringWithFormat:@"Enter: %@    Tab: %@", enter, tab];
+}
+
+/* ================================================================
+ *  状态栏 Tab 图标绘制（你要改的主要区域）
+ *
+ *  这个函数只影响 macOS 顶部状态栏里的 Tab 图标，不影响毛玻璃 HUD。
+ *
+ *  调参顺序建议：
+ *  1) 先调粗细: shaftStroke / headStroke
+ *  2) 再调形状: startX / endX / backX / headHalf
+ *  3) 最后调位置: midY + baseline offset + attachment.bounds.x(与 Enter 的间距)
+ * ================================================================ */
+- (NSAttributedString *)statusBarTabGlyphWithColor:(NSColor *)color {
+    /* 画布尺寸（Tab 图标自身大小） */
+    /* width/height 变大=图标整体更大；变小=整体更小 */
+    const CGFloat width = 13.8;
+    const CGFloat height = 11.6;
+
+    /* 线宽控制 */
+    /* shaftStroke: 尾巴横线粗细 */
+    /* headStroke : 箭头与竖线粗细 */
+    const CGFloat shaftStroke = 1.42;  /* 提升到更接近 Enter 的视觉粗细 */
+    const CGFloat headStroke = 1.24;   /* 箭头与竖线同步加粗 */
+
+    NSImage *img = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+    [img lockFocus];
+    [color setStroke];
+
+    /* 几何参数（决定 Tab 外形） */
+    /* midY    : 整个 Tab 在画布内的垂直位置，+ 往上，- 往下 */
+    /* startX  : 尾巴起点；值越大，尾巴越短 */
+    /* endX    : 右端终点；值越大，整体越长 */
+    /* backX   : 箭头回收点；值越小，箭头头越长 */
+    /* headHalf: 箭头半高；值越大，箭头/竖线越高 */
+    CGFloat midY = 5.5;      /* 0.5 对齐，减少抗锯齿导致的忽粗忽细 */
+    CGFloat startX = 1.8;    /* 尾巴再短一点 */
+    CGFloat endX = 11.5;     /* 整体略缩小，更贴近 Enter 体量 */
+    CGFloat backX = 9.2;     /* 箭头头部再长一点 */
+    CGFloat headHalf = 2.25; /* 稍微增加箭头头部高度 */
+
+    NSBezierPath *shaft = [NSBezierPath bezierPath];
+    shaft.lineWidth = shaftStroke;
+    shaft.lineCapStyle = NSLineCapStyleRound;
+    [shaft moveToPoint:NSMakePoint(startX, midY)];
+    [shaft lineToPoint:NSMakePoint(endX, midY)];
+    [shaft stroke];
+
+    NSBezierPath *head = [NSBezierPath bezierPath];
+    head.lineWidth = headStroke;
+    head.lineCapStyle = NSLineCapStyleRound;
+    head.lineJoinStyle = NSLineJoinStyleRound;
+    [head moveToPoint:NSMakePoint(backX, midY - headHalf)];
+    [head lineToPoint:NSMakePoint(endX, midY)];
+    [head lineToPoint:NSMakePoint(backX, midY + headHalf)];
+    [head stroke];
+
+    NSBezierPath *cap = [NSBezierPath bezierPath];
+    cap.lineWidth = headStroke;
+    cap.lineCapStyle = NSLineCapStyleRound;
+    /* 竖线与箭头头部同高 */
+    [cap moveToPoint:NSMakePoint(endX, midY - headHalf)];
+    [cap lineToPoint:NSMakePoint(endX, midY + headHalf)];
+    [cap stroke];
+
+    [img unlockFocus];
+
+    NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
+    attachment.image = img;
+    /* attachment.bounds.x = 与 Enter 图标的水平间距（最常改） */
+    /* x 更大(如 0.2) => Enter/Tab 更远；x 更小(如 -0.8) => 更近 */
+    /* y 通常保持 0，避免状态栏垂直抖动 */
+    attachment.bounds = NSMakeRect(-0.2, 0.0, width, height);
+    NSMutableAttributedString *tab =
+        [[NSMutableAttributedString alloc]
+            initWithAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
+    [tab addAttribute:NSBaselineOffsetAttributeName
+                /* baseline offset: Tab 相对 Enter 的垂直微调 */
+                /* 更负(如 -1.0) => Tab 更往下；更大(如 -0.3) => Tab 更往上 */
+                value:@(-0.7)   /* 当前值: Tab 单独下移 0.3 */
+                range:NSMakeRange(0, tab.length)];
+    return tab;
+}
+
+/* ================================================================
+ *  状态栏 Enter + Tab 组合（你要改的第二个区域）
+ *
+ *  - Enter / Tab 都用字体符号渲染（统一风格）
+ *  - 亮暗逻辑：enterColor/tabColor 分别由各自开关控制
+ * ================================================================ */
+- (NSAttributedString *)statusBarIconAttributedTitle {
+    NSColor *enabledColor = [NSColor labelColor];
+    NSColor *disabledColor = [NSColor systemGrayColor];
+    NSColor *enterColor = g_enter_enabled ? enabledColor : disabledColor;
+    NSColor *tabColor = g_tab_enabled ? enabledColor : disabledColor;
+
+    /* Enter 图标字体。你觉得 Enter 太大/太小，就改这里 */
+    NSFont *enterFont = [NSFont monospacedSystemFontOfSize:15 weight:NSFontWeightMedium];
+    NSMutableAttributedString *attr =
+        [[NSMutableAttributedString alloc]
+            initWithString:@"↩"
+                attributes:@{
+                    NSFontAttributeName: enterFont,
+                    NSForegroundColorAttributeName: enterColor
+                }];
+
+    /* Tab 改为符号渲染：和 Enter 一样稳定，不受自绘抗锯齿影响 */
+    NSFont *tabFont = [NSFont monospacedSystemFontOfSize:15 weight:NSFontWeightMedium];
+    [attr appendAttributedString:[[NSAttributedString alloc]
+        initWithString:@" "
+            attributes:@{ NSFontAttributeName: enterFont }]];
+
+    NSMutableAttributedString *tabAttr =
+        [[NSMutableAttributedString alloc]
+            initWithString:@"⇥"
+                attributes:@{
+                    NSFontAttributeName: tabFont,
+                    NSForegroundColorAttributeName: tabColor
+                }];
+    [tabAttr addAttribute:NSBaselineOffsetAttributeName
+                    value:@(0.2)   /* 微调: 相比上一版下移约 0.2px 体感 */
+                    range:NSMakeRange(0, tabAttr.length)];
+    [attr appendAttributedString:tabAttr];
+
+    return attr;
+}
+
 - (void)refreshMenuAndIcon {
+    /* 每次开关变化后都会走这里，把新图标刷新到顶部状态栏 */
     self.toggleEnterItem.state = g_enter_enabled
         ? NSControlStateValueOn : NSControlStateValueOff;
     self.toggleTabItem.state = g_tab_enabled
         ? NSControlStateValueOn : NSControlStateValueOff;
 
-    if (g_enter_enabled && g_tab_enabled) {
-        self.statusItem.button.title = @"↩⇥";
-    } else if (g_enter_enabled) {
-        self.statusItem.button.title = @"↩";
-    } else if (g_tab_enabled) {
-        self.statusItem.button.title = @"⇥";
-    } else {
-        self.statusItem.button.title = @"↩";
-    }
-    self.statusItem.button.alphaValue = has_enabled_action() ? 1.0 : 0.3;
+    self.statusItem.button.title = @"";
+    self.statusItem.button.attributedTitle = [self statusBarIconAttributedTitle];
+    self.statusItem.button.alphaValue = 1.0;
 }
 
 - (void)toggleEnter:(id)sender {
@@ -444,7 +675,9 @@ static inline BOOL has_enabled_action(void) {
 
     [self refreshMenuAndIcon];
     [self showHUDWithIcon:@"↩"
-                    label:g_enter_enabled ? @"AutoEnter ON" : @"AutoEnter OFF"
+                    label:g_enter_enabled
+                        ? L(@"自动回车 已开启", @"AutoEnter ON")
+                        : L(@"自动回车 已关闭", @"AutoEnter OFF")
                   enabled:g_enter_enabled];
     NSLog(@"[autoenter] enter %s", g_enter_enabled ? "ENABLED" : "DISABLED");
 }
@@ -459,9 +692,32 @@ static inline BOOL has_enabled_action(void) {
 
     [self refreshMenuAndIcon];
     [self showHUDWithIcon:@"⇥"
-                    label:g_tab_enabled ? @"AutoTab ON" : @"AutoTab OFF"
+                    label:g_tab_enabled
+                        ? L(@"自动 Tab 已开启", @"AutoTab ON")
+                        : L(@"自动 Tab 已关闭", @"AutoTab OFF")
                   enabled:g_tab_enabled];
     NSLog(@"[autoenter] tab %s", g_tab_enabled ? "ENABLED" : "DISABLED");
+}
+
+- (void)toggleUILanguage:(id)sender {
+    (void)sender;
+    g_ui_lang_en = !g_ui_lang_en;
+    [self refreshLocalizedTexts];
+    [self refreshMenuAndIcon];
+    [self showHUDWithIcon:@"文  A"
+                    label:g_ui_lang_en
+                        ? @"UI switched to English"
+                        : @"界面已切换为中文"
+                  enabled:YES];
+    NSLog(@"[autoenter] ui language -> %s", g_ui_lang_en ? "en" : "zh");
+}
+
+- (void)showStatus:(id)sender {
+    (void)sender;
+    self.hudIcon.attributedStringValue = [self hudStatusIconAttributedTitle];
+    self.hudLabel.stringValue = [self statusSummaryText];
+    [self presentHUD];
+    NSLog(@"[autoenter] status enter=%d tab=%d", g_enter_enabled, g_tab_enabled);
 }
 
 /* 保留原入口，兼容菜单历史 action 和 SIGUSR1 */
@@ -488,15 +744,27 @@ static inline BOOL has_enabled_action(void) {
     );
 
     if (!g_tap) {
-        NSString *path = [[NSBundle mainBundle] executablePath] ?: @"(unknown path)";
+        NSString *path = [[NSBundle mainBundle] executablePath] ?:
+            L(@"(未知路径)", @"(unknown path)");
         open_accessibility_settings();
         NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText     = @"Typeless AutoEnter needs Accessibility permission";
-        alert.informativeText = [NSString stringWithFormat:
-            @"Tried opening: System Settings > Privacy & Security > Accessibility\n\n"
-            @"Click +, add and enable this app binary:\n%@\n\n"
-            @"If it already exists in the list, remove it with - first, then re-add.\n\n"
-            @"After granting permission, launch TypelessAutoEnter.app again.", path];
+        alert.messageText = L(
+            @"Typeless AutoEnter 需要辅助功能权限",
+            @"Typeless AutoEnter needs Accessibility permission"
+        );
+        if (g_ui_lang_en) {
+            alert.informativeText = [NSString stringWithFormat:
+                @"Tried opening: System Settings > Privacy & Security > Accessibility\n\n"
+                @"Click +, add and enable this app binary:\n%@\n\n"
+                @"If it already exists in the list, remove it with - first, then re-add.\n\n"
+                @"After granting permission, launch TypelessAutoEnter.app again.", path];
+        } else {
+            alert.informativeText = [NSString stringWithFormat:
+                @"已尝试自动打开：系统设置 → 隐私与安全性 → 辅助功能\n\n"
+                @"点击 + 号，添加以下程序并启用：\n%@\n\n"
+                @"如果列表中已存在，请先用 - 号移除，再重新添加。\n"
+                @"授权完成后，请关闭并重新打开一次 App。", path];
+        }
         alert.alertStyle = NSAlertStyleCritical;
         [alert runModal];
         system("launchctl unload ~/Library/LaunchAgents/com.user.typeless-autoenter.plist 2>/dev/null");
@@ -548,7 +816,7 @@ static inline BOOL has_enabled_action(void) {
  * ================================================================ */
 
 int main(int argc, const char *argv[]) {
-    (void)argc; (void)argv;
+    init_ui_lang(argc, argv);
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
         AppDelegate *del   = [[AppDelegate alloc] init];

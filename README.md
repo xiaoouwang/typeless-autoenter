@@ -12,6 +12,35 @@ Automatically presses Enter and/or Tab after [Typeless](https://typeless.com) fi
 
 Typeless pastes recognized text via `Cmd+V`, but many workflows still need a follow-up key press. This tool detects that paste event and simulates Enter and/or Tab after a 500ms delay, so your hands can stay off the keyboard entirely.
 
+## Codex workflow
+
+This release adds a Codex-oriented Tab flow:
+
+1. Turn on `AutoTab` with `Ctrl + Shift + Tab`
+2. Speak with Typeless
+3. After Typeless pastes text, this app sends `Tab` automatically
+
+In Codex UIs/workflows where `Tab` means "queue next command", your new command is pushed behind the currently running task.  
+Note: the queue behavior itself is provided by the target app (Codex), while this tool is responsible for sending the key event at the right time.
+
+## What's new (2026-03)
+
+### Features
+
+- `AutoEnter` and `AutoTab` are independent toggles and can be enabled together
+- New global shortcut: `Ctrl + Shift + \`` to show a status snapshot without changing toggle state
+- UI language switching is built in (default Chinese, in-app toggle to English)
+- Startup language override is supported via `--lang`, `--ui-lang`, and `TYPELESS_UI_LANG`
+- Permission UX upgrade: automatically opens the Accessibility page when permission is missing
+
+### Bug fixes
+
+- Fixed accidental `Cmd+Tab` behavior by clearing modifier flags before posting synthetic key events
+- Fixed status snapshot highlight logic: Enter and Tab are now independently bright/dim
+- Fixed HUD icon alignment: single-icon and dual-status rendering are centered correctly
+- Status bar Tab icon now uses a single symbol (`⇥`) for stable cross-device rendering
+- Refined status bar spacing and baseline alignment for Enter/Tab icon pairing
+
 ## How it works
 
 1. Scans running processes every 30s to find Typeless by name
@@ -38,6 +67,32 @@ open TypelessAutoEnter.app
 TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
 ```
 
+### UI copy (Chinese / English)
+
+Default UI copy is **Chinese**.
+
+Switch to English UI:
+
+1. Open the menu bar app menu
+2. Click `界面语言：中文` once
+3. It will become `UI Language: English` and all UI text switches to English
+
+Switch back to Chinese UI:
+
+- Click `UI Language: English`
+
+Start directly in English UI (without manual click):
+
+```bash
+# option 1: command argument
+TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter --lang en
+
+# option 2: environment variable
+TYPELESS_UI_LANG=en open TypelessAutoEnter.app
+```
+
+Supported values: `en`, `english`, `zh`, `cn`, `zh-cn`, `chinese`.
+
 On first launch, macOS requires **Accessibility** permission. If permission is missing, the app opens the Accessibility settings page automatically and shows an alert with the binary path.
 
 **Steps to authorize:**
@@ -51,9 +106,18 @@ On first launch, macOS requires **Accessibility** permission. If permission is m
 
 You only need to do this once. The `.app` bundle has a stable `CFBundleIdentifier`, so macOS remembers the permission even after recompiling.
 
+### System UX updates
+
+- Clearer runtime prompts for toggles and status snapshot
+- Automatic jump to **Accessibility** settings when permission is missing
+- Permission alert now explicitly reminds you to relaunch the app after granting access
+- HUD layout tuned for two-key status text, with the same frosted-glass style
+- Status snapshot now renders Enter/Tab independently: enabled key is bright, disabled key is dim
+- Status bar icon rendering updated to symbol-based `⇥` + tuned spacing/baseline
+
 ### Menu bar
 
-A menu bar icon appears (`↩`, `⇥`, or `↩⇥`). Click it to toggle `AutoEnter` / `AutoTab`.
+A menu bar icon appears (`↩`, `⇥`, or `↩  ⇥`). Click it to toggle `AutoEnter` / `AutoTab`.
 
 - Enabled: icon at full opacity
 - Disabled: icon grayed out
@@ -64,9 +128,32 @@ A menu bar icon appears (`↩`, `⇥`, or `↩⇥`). Click it to toggle `AutoEnt
 
 `Ctrl + Shift + Tab` toggles `AutoTab`.
 
-A frosted-glass HUD flashes on screen to confirm each toggle.
+`Ctrl + Shift + \`` shows the current state snapshot (`Enter` + `Tab`) without toggling.
 
-To change the shortcut, edit line 127-131 in `typeless-autoenter.m` and recompile. The modifier keys are:
+A frosted-glass HUD flashes on screen for both toggle and state snapshot actions.
+
+The `Ctrl + Shift + \`` shortcut is matched by physical keycode (`kVK_ANSI_Grave`), so it works regardless of current input method (English/Chinese/etc.).
+
+### Shortcut management (disable / modify)
+
+Edit `typeless-autoenter.m`, then rebuild with `./build.sh`.
+
+Disable one shortcut:
+
+- Find the matching branch in `event_callback` and comment it out.
+- Examples: `keycode == kVK_Return` (AutoEnter), `keycode == kVK_Tab` (AutoTab), `keycode == kVK_ANSI_Grave` (status snapshot)
+
+Change shortcut key:
+
+- Keep the `Ctrl + Shift` modifier check.
+- Replace the key constant in that branch with the one you want.
+
+Disable all global shortcuts:
+
+- Remove or comment the whole "shortcut handling" block in `event_callback`.
+- The menu items still work.
+
+Useful constants:
 
 | Flag | Key |
 |------|-----|
@@ -74,6 +161,9 @@ To change the shortcut, edit line 127-131 in `typeless-autoenter.m` and recompil
 | `kCGEventFlagMaskShift` | Shift |
 | `kCGEventFlagMaskCommand` | Cmd |
 | `kCGEventFlagMaskAlternate` | Option |
+| `kVK_Return` | Enter |
+| `kVK_Tab` | Tab |
+| `kVK_ANSI_Grave` | ` (backquote / tilde key) |
 
 ### Toggle via script
 
