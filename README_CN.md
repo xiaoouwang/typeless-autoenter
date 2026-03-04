@@ -6,18 +6,18 @@
 
 **中文** | [English](README.md)
 
-[Typeless](https://typeless.com) 语音输入结束后自动按 Enter，macOS 菜单栏常驻工具。
+[Typeless](https://typeless.com) 语音输入结束后自动按 Enter / Tab 的 macOS 菜单栏常驻工具。
 
 ## 为什么做这个
 
-Typeless 识别完语音后通过 `Cmd+V` 粘贴文字，但你还得手动按一下回车才能发送。这个工具检测到粘贴事件后等待 500ms，然后自动模拟一次 Enter，彻底解放双手。
+Typeless 识别完语音后通过 `Cmd+V` 粘贴文字，但很多流程还需要后续按键。这个工具检测到粘贴事件后等待 500ms，然后按当前开关自动模拟 Enter 和/或 Tab，彻底解放双手。
 
 ## 工作原理
 
 1. 每 30 秒扫描进程列表，按名称找到 Typeless
 2. 通过 `CGEvent Tap` 监听系统级键盘事件
 3. 按 PID 过滤，只响应来自 Typeless 的 `Cmd+V`
-4. 等待 500ms（期间如果有新的 `Cmd+V` 则重置计时），然后模拟 Enter
+4. 等待 500ms（期间如果有新的 `Cmd+V` 则重置计时），然后按当前已开启的动作模拟 Enter 和/或 Tab
 
 ## 编译
 
@@ -38,7 +38,7 @@ open TypelessAutoEnter.app
 TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
 ```
 
-首次启动需要授予**辅助功能**权限。如果缺少权限，程序会弹窗提示并显示二进制路径。
+首次启动需要授予**辅助功能**权限。如果缺少权限，程序会先尝试自动打开“辅助功能”设置页，再弹窗提示并显示二进制路径。
 
 **授权步骤：**
 
@@ -53,14 +53,16 @@ TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
 
 ### 菜单栏
 
-菜单栏会出现一个 `↩` 图标。点击打开菜单，可以切换开关。
+菜单栏会显示 `↩`、`⇥` 或 `↩⇥` 图标。点击打开菜单，可分别切换 AutoEnter / AutoTab。
 
 - 开启时：图标正常显示
 - 关闭时：图标变灰
 
 ### 全局快捷键
 
-`Ctrl + Shift + Enter` 切换开关。屏幕中央会弹出毛玻璃 HUD 确认当前状态。
+`Ctrl + Shift + Enter` 切换 AutoEnter。  
+`Ctrl + Shift + Tab` 切换 AutoTab。  
+每次切换都会在屏幕中央弹出毛玻璃 HUD 确认状态。
 
 如需修改快捷键，编辑 `typeless-autoenter.m` 第 127-131 行，然后重新编译。修饰键对照：
 
@@ -81,7 +83,7 @@ TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
 
 ## 自定义
 
-自动按 Enter 的延迟默认为 **500ms**。如需修改，编辑 `typeless-autoenter.m` 第 27 行：
+自动按键延迟默认为 **500ms**。如需修改，编辑 `typeless-autoenter.m` 中的 `DELAY_SEC`：
 
 ```c
 static const CFTimeInterval DELAY_SEC = 0.5;  // 改成你想要的延迟秒数

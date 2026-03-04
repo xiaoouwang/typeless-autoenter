@@ -6,18 +6,18 @@
 
 [中文](README_CN.md) | **English**
 
-Automatically presses Enter after [Typeless](https://typeless.com) finishes voice-to-text input on macOS.
+Automatically presses Enter and/or Tab after [Typeless](https://typeless.com) finishes voice-to-text input on macOS.
 
 ## Why
 
-Typeless pastes recognized text via `Cmd+V` — but you still have to manually press Enter to send it. This tool detects that paste event and simulates an Enter keypress after a 500ms delay, so your hands can stay off the keyboard entirely.
+Typeless pastes recognized text via `Cmd+V`, but many workflows still need a follow-up key press. This tool detects that paste event and simulates Enter and/or Tab after a 500ms delay, so your hands can stay off the keyboard entirely.
 
 ## How it works
 
 1. Scans running processes every 30s to find Typeless by name
 2. Listens for global `keyDown` events via `CGEvent Tap`
 3. Filters by PID — only reacts to `Cmd+V` from the Typeless process
-4. Waits 500ms (resets if another `Cmd+V` arrives), then simulates Enter
+4. Waits 500ms (resets if another `Cmd+V` arrives), then simulates enabled key actions (Enter and/or Tab)
 
 ## Build
 
@@ -38,7 +38,7 @@ open TypelessAutoEnter.app
 TypelessAutoEnter.app/Contents/MacOS/typeless-autoenter
 ```
 
-On first launch, macOS requires **Accessibility** permission. The app will show an alert with the binary path if permission is missing.
+On first launch, macOS requires **Accessibility** permission. If permission is missing, the app opens the Accessibility settings page automatically and shows an alert with the binary path.
 
 **Steps to authorize:**
 
@@ -53,14 +53,18 @@ You only need to do this once. The `.app` bundle has a stable `CFBundleIdentifie
 
 ### Menu bar
 
-A `↩` icon appears in the menu bar. Click it to open a menu where you can toggle on/off.
+A menu bar icon appears (`↩`, `⇥`, or `↩⇥`). Click it to toggle `AutoEnter` / `AutoTab`.
 
 - Enabled: icon at full opacity
 - Disabled: icon grayed out
 
 ### Global shortcut
 
-`Ctrl + Shift + Enter` toggles the auto-enter on/off. A frosted-glass HUD flashes on screen to confirm.
+`Ctrl + Shift + Enter` toggles `AutoEnter`.
+
+`Ctrl + Shift + Tab` toggles `AutoTab`.
+
+A frosted-glass HUD flashes on screen to confirm each toggle.
 
 To change the shortcut, edit line 127-131 in `typeless-autoenter.m` and recompile. The modifier keys are:
 
@@ -81,7 +85,7 @@ Sends `SIGUSR1` to toggle without touching the menu bar.
 
 ## Customization
 
-The delay before auto-pressing Enter defaults to **500ms**. To change it, edit line 27 in `typeless-autoenter.m`:
+The delay before auto-pressing keys defaults to **500ms**. To change it, edit `DELAY_SEC` in `typeless-autoenter.m`:
 
 ```c
 static const CFTimeInterval DELAY_SEC = 0.5;  // change to your preferred delay in seconds
