@@ -1,6 +1,6 @@
 /**
  * [INPUT]:  macOS Cocoa (NSStatusItem, NSVisualEffectView), CoreGraphics CGEvent, libproc
- * [OUTPUT]: 菜单栏守护程序 — 检测 Typeless 输入结束后自动模拟 Enter/Tab，带毛玻璃 HUD 反馈
+ * [OUTPUT]: 菜单栏守护程序 — 检测 Typeless / Wispr Flow 输入结束后自动模拟 Enter/Tab，带毛玻璃 HUD 反馈
  * [POS]:    Typeless-AutoEnter 的核心程序（菜单栏版本，取代 CLI 版 .c）
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
@@ -9,6 +9,7 @@
  *  Typeless AutoEnter — Menu Bar App
  *
  *  菜单栏 ↩ 图标 + 毛玻璃 HUD 通知
+ *  可切换监听 Typeless 或 Wispr Flow
  *  CGEvent Tap 监听 → PID 过滤 → 500ms 延迟 → 模拟 Enter/Tab
  *  Ctrl+Shift+` 显示当前 Enter/Tab 状态
  *  SIGUSR1 / 菜单栏点击 切换开关
@@ -29,13 +30,37 @@
 static volatile int g_enter_enabled = 1;
 static volatile int g_tab_enabled = 0;
 
+typedef enum {
+    MonitorTargetTypeless = 0,
+    MonitorTargetWisprFlow = 1
+} MonitorTarget;
+
+#define kMonitorTargetDefaultsKey @"monitorTarget"
+static volatile MonitorTarget g_monitor_target = MonitorTargetTypeless;
+
 #define MAX_PIDS 16
-static pid_t g_typeless_pids[MAX_PIDS];
-static int   g_typeless_pid_count = 0;
+static pid_t g_target_pids[MAX_PIDS];
+static int   g_target_pid_count = 0;
 
 static CFRunLoopTimerRef g_action_timer = NULL;
 static CFMachPortRef     g_tap = NULL;
 static const CFTimeInterval DELAY_SEC = 0.5;
+
+static const char *monitor_target_proc_needle(MonitorTarget target) {
+    switch (target) {
+        case MonitorTargetWisprFlow: return "Wispr Flow";
+        case MonitorTargetTypeless:
+        default:                     return "Typeless";
+    }
+}
+
+static NSString *monitor_target_display_name(MonitorTarget target) {
+    switch (target) {
+        case MonitorTargetWisprFlow: return @"Wispr Flow";
+        case MonitorTargetTypeless:
+        default:                     return @"Typeless";
+    }
+}
 
 /* 快捷键回调用的 toggle block */
 static void (^g_toggle_enter_block)(void) = nil;
@@ -86,7 +111,7 @@ static void init_ui_lang(int argc, const char *argv[]) {
 }
 
 /* ================================================================
- *  PID 扫描: 找到所有 Typeless 进程（后台线程执行）
+ *  PID 扫描: 找到当前监听目标的所有进程（后台线程执行）
  *
  *  proc_name() 是系统调用，进程数上千时阻塞可达百毫秒。
  *  主线程同时承载 CGEvent Tap 回调（active tap，系统等待返回），
@@ -94,7 +119,10 @@ static void init_ui_lang(int argc, const char *argv[]) {
  *  方案：后台扫描，结果写入临时数组，完成后原子交换到主线程。
  * ================================================================ */
 
-static void refresh_typeless_pids(void) {
+static void refresh_target_pids(void) {
+    MonitorTarget target = g_monitor_target;
+    const char *needle = monitor_target_proc_needle(target);
+
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         int buf_size = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
         if (buf_size <= 0) return;
@@ -113,7 +141,7 @@ static void refresh_typeless_pids(void) {
             if (pids[i] == 0) continue;
             char name[256];
             if (proc_name(pids[i], name, sizeof(name)) > 0 &&
-                strstr(name, "Typeless") != NULL) {
+                strstr(name, needle) != NULL) {
                 tmp[tmp_count++] = pids[i];
             }
         }
@@ -121,16 +149,21 @@ static void refresh_typeless_pids(void) {
 
         /* 回主线程原子交换 — event_callback 永远看到一致的快照 */
         dispatch_async(dispatch_get_main_queue(), ^{
-            memcpy(g_typeless_pids, tmp, tmp_count * sizeof(pid_t));
-            g_typeless_pid_count = tmp_count;
+            /* 扫描期间若用户已切换目标，丢弃过期结果 */
+            if (g_monitor_target != target) {
+                free(tmp);
+                return;
+            }
+            memcpy(g_target_pids, tmp, tmp_count * sizeof(pid_t));
+            g_target_pid_count = tmp_count;
             free(tmp);
         });
     });
 }
 
-static int is_typeless_pid(pid_t pid) {
-    for (int i = 0; i < g_typeless_pid_count; i++)
-        if (g_typeless_pids[i] == pid) return 1;
+static int is_target_pid(pid_t pid) {
+    for (int i = 0; i < g_target_pid_count; i++)
+        if (g_target_pids[i] == pid) return 1;
     return 0;
 }
 
@@ -246,14 +279,14 @@ static CGEventRef event_callback(
         return NULL;   /* 吞掉，不传给应用 */
     }
 
-    /* Typeless 检测 */
+    /* Typeless / Wispr Flow 检测 */
     if (!g_enter_enabled && !g_tab_enabled) return event;
 
     pid_t src = (pid_t)CGEventGetIntegerValueField(
         event, kCGEventSourceUnixProcessID
     );
-    if (is_typeless_pid(src)) {
-        /* Typeless 通过 Cmd+V 粘贴文字上屏 */
+    if (is_target_pid(src)) {
+        /* 两者均通过 Cmd+V 粘贴文字上屏 */
         /* 只在检测到 Cmd+V (keycode 0x09) 时启动定时器 */
         if (keycode == kVK_ANSI_V && (flags & kCGEventFlagMaskCommand))
             reset_timer();
@@ -306,6 +339,9 @@ static void open_accessibility_settings(void) {
 @property (nonatomic, strong) NSStatusItem *statusItem;
 @property (nonatomic, strong) NSMenuItem   *toggleEnterItem;
 @property (nonatomic, strong) NSMenuItem   *toggleTabItem;
+@property (nonatomic, strong) NSMenuItem   *monitorHeaderItem;
+@property (nonatomic, strong) NSMenuItem   *monitorTypelessItem;
+@property (nonatomic, strong) NSMenuItem   *monitorWisprFlowItem;
 @property (nonatomic, strong) NSMenuItem   *languageItem;
 @property (nonatomic, strong) NSMenuItem   *quitItem;
 @property (nonatomic, strong) HUDWindow    *hudWindow;
@@ -328,6 +364,7 @@ static inline BOOL has_enabled_action(void) {
     (void)n;
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
+    [self loadPersistedMonitorTarget];
     [self setupStatusBar];
     [self setupHUD];
     [self setupEventTap];
@@ -341,9 +378,11 @@ static inline BOOL has_enabled_action(void) {
     g_toggle_tab_block = ^{ [weakSelf toggleTab:nil]; };
     g_show_status_block = ^{ [weakSelf showStatus:nil]; };
 
-    refresh_typeless_pids();
-    NSLog(@"[autoenter] running (pid %d, enter=1, tab=0, ui=%s)",
-          getpid(), g_ui_lang_en ? "en" : "zh");
+    refresh_target_pids();
+    NSLog(@"[autoenter] running (pid %d, enter=1, tab=0, ui=%s, target=%s)",
+          getpid(),
+          g_ui_lang_en ? "en" : "zh",
+          monitor_target_proc_needle(g_monitor_target));
 }
 
 - (void)applicationWillTerminate:(NSNotification *)n {
@@ -376,6 +415,31 @@ static inline BOOL has_enabled_action(void) {
     self.toggleTabItem.target = self;
     self.toggleTabItem.state  = NSControlStateValueOff;
     [menu addItem:self.toggleTabItem];
+
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    self.monitorHeaderItem = [[NSMenuItem alloc]
+        initWithTitle:@""
+               action:nil
+        keyEquivalent:@""];
+    self.monitorHeaderItem.enabled = NO;
+    [menu addItem:self.monitorHeaderItem];
+
+    self.monitorTypelessItem = [[NSMenuItem alloc]
+        initWithTitle:@"Typeless"
+               action:@selector(selectMonitorTypeless:)
+        keyEquivalent:@""];
+    self.monitorTypelessItem.target = self;
+    [menu addItem:self.monitorTypelessItem];
+
+    self.monitorWisprFlowItem = [[NSMenuItem alloc]
+        initWithTitle:@"Wispr Flow"
+               action:@selector(selectMonitorWisprFlow:)
+        keyEquivalent:@""];
+    self.monitorWisprFlowItem.target = self;
+    [menu addItem:self.monitorWisprFlowItem];
+
+    [menu addItem:[NSMenuItem separatorItem]];
 
     self.languageItem = [[NSMenuItem alloc]
         initWithTitle:@""
@@ -516,6 +580,9 @@ static inline BOOL has_enabled_action(void) {
 - (void)refreshLocalizedTexts {
     self.toggleEnterItem.title = L(@"自动回车", @"AutoEnter");
     self.toggleTabItem.title   = L(@"自动 Tab", @"AutoTab");
+    self.monitorHeaderItem.title = L(@"监听应用", @"Monitor App");
+    self.monitorTypelessItem.title = @"Typeless";
+    self.monitorWisprFlowItem.title = @"Wispr Flow";
     self.languageItem.title    = g_ui_lang_en
         ? @"UI Language: English"
         : @"界面语言：中文";
@@ -658,6 +725,12 @@ static inline BOOL has_enabled_action(void) {
         ? NSControlStateValueOn : NSControlStateValueOff;
     self.toggleTabItem.state = g_tab_enabled
         ? NSControlStateValueOn : NSControlStateValueOff;
+    self.monitorTypelessItem.state =
+        (g_monitor_target == MonitorTargetTypeless)
+            ? NSControlStateValueOn : NSControlStateValueOff;
+    self.monitorWisprFlowItem.state =
+        (g_monitor_target == MonitorTargetWisprFlow)
+            ? NSControlStateValueOn : NSControlStateValueOff;
 
     self.statusItem.button.title = @"";
     self.statusItem.button.attributedTitle = [self statusBarIconAttributedTitle];
@@ -710,6 +783,51 @@ static inline BOOL has_enabled_action(void) {
                         : @"界面已切换为中文"
                   enabled:YES];
     NSLog(@"[autoenter] ui language -> %s", g_ui_lang_en ? "en" : "zh");
+}
+
+- (void)loadPersistedMonitorTarget {
+    NSInteger saved = [[NSUserDefaults standardUserDefaults]
+        integerForKey:kMonitorTargetDefaultsKey];
+    if (saved == MonitorTargetWisprFlow) {
+        g_monitor_target = MonitorTargetWisprFlow;
+    } else {
+        g_monitor_target = MonitorTargetTypeless;
+    }
+}
+
+- (void)persistMonitorTarget {
+    [[NSUserDefaults standardUserDefaults]
+        setInteger:(NSInteger)g_monitor_target
+            forKey:kMonitorTargetDefaultsKey];
+}
+
+- (void)applyMonitorTarget:(MonitorTarget)target {
+    if (g_monitor_target == target) return;
+
+    g_monitor_target = target;
+    g_target_pid_count = 0;
+    cancel_action_timer();
+    [self persistMonitorTarget];
+    [self refreshMenuAndIcon];
+    refresh_target_pids();
+
+    NSString *name = monitor_target_display_name(target);
+    [self showHUDWithIcon:@"◎"
+                    label:[NSString stringWithFormat:
+                        L(@"监听 %@", @"Monitoring %@"), name]
+                  enabled:YES];
+    NSLog(@"[autoenter] monitor target -> %s",
+          monitor_target_proc_needle(target));
+}
+
+- (void)selectMonitorTypeless:(id)sender {
+    (void)sender;
+    [self applyMonitorTarget:MonitorTargetTypeless];
+}
+
+- (void)selectMonitorWisprFlow:(id)sender {
+    (void)sender;
+    [self applyMonitorTarget:MonitorTargetWisprFlow];
 }
 
 - (void)showStatus:(id)sender {
@@ -785,7 +903,7 @@ static inline BOOL has_enabled_action(void) {
     self.pidRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:30.0
         repeats:YES block:^(NSTimer *t) {
             (void)t;
-            refresh_typeless_pids();
+            refresh_target_pids();
         }];
 }
 

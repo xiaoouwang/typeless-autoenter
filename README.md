@@ -6,22 +6,29 @@
 
 [中文](README_CN.md) | **English**
 
-Automatically presses Enter and/or Tab after [Typeless](https://typeless.com) finishes voice-to-text input on macOS.
+Automatically presses Enter and/or Tab after [Typeless](https://typeless.com) or [Wispr Flow](https://wisprflow.ai) finishes voice-to-text input on macOS. Choose which app to monitor from the menu bar.
 
 ## Why
 
-Typeless pastes recognized text via `Cmd+V`, but many workflows still need a follow-up key press. This tool detects that paste event and simulates Enter and/or Tab after a 500ms delay, so your hands can stay off the keyboard entirely.
+Voice tools like Typeless and Wispr Flow paste recognized text via `Cmd+V`, but many workflows still need a follow-up key press. This tool detects that paste event and simulates Enter and/or Tab after a 500ms delay, so your hands can stay off the keyboard entirely.
 
 ## Codex workflow
 
 This release adds a Codex-oriented Tab flow:
 
-1. Turn on `AutoTab` with `Ctrl + Shift + Tab`
-2. Speak with Typeless
-3. After Typeless pastes text, this app sends `Tab` automatically
+1. In the menu bar, select the voice app you use (`Typeless` or `Wispr Flow`)
+2. Turn on `AutoTab` with `Ctrl + Shift + Tab`
+3. Speak with the selected app
+4. After it pastes text, this app sends `Tab` automatically
 
 In Codex UIs/workflows where `Tab` means "queue next command", your new command is pushed behind the currently running task.  
 Note: the queue behavior itself is provided by the target app (Codex), while this tool is responsible for sending the key event at the right time.
+
+## What's new (2026-07)
+
+### Features
+
+- Monitor either **Typeless** or **Wispr Flow** — pick one from the menu bar (`Monitor App`); selection is persisted across launches
 
 ## What's new (2026-03)
 
@@ -43,9 +50,9 @@ Note: the queue behavior itself is provided by the target app (Codex), while thi
 
 ## How it works
 
-1. Scans running processes every 30s to find Typeless by name
+1. Scans running processes every 30s to find the selected monitor target (`Typeless` or `Wispr Flow`) by process name
 2. Listens for global `keyDown` events via `CGEvent Tap`
-3. Filters by PID — only reacts to `Cmd+V` from the Typeless process
+3. Filters by PID — only reacts to `Cmd+V` from that app's process
 4. Waits 500ms (resets if another `Cmd+V` arrives), then simulates enabled key actions (Enter and/or Tab)
 
 ## Build
@@ -117,7 +124,10 @@ You only need to do this once. The `.app` bundle has a stable `CFBundleIdentifie
 
 ### Menu bar
 
-A menu bar icon appears (`↩`, `⇥`, or `↩  ⇥`). Click it to toggle `AutoEnter` / `AutoTab`.
+A menu bar icon appears (`↩`, `⇥`, or `↩  ⇥`). Click it to open the menu:
+
+- Toggle `AutoEnter` / `AutoTab`
+- Under **Monitor App**, choose **Typeless** or **Wispr Flow** (exclusive; only one is monitored at a time). The choice is saved and restored on next launch.
 
 - Enabled: icon at full opacity
 - Disabled: icon grayed out
